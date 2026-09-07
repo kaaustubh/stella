@@ -901,6 +901,14 @@ const createAuth = () => {
       cookiePrefix,
       database: AUTH_DATABASE_ID_OPTIONS,
       useSecureCookies,
+      // Cross-site deployments only; see AUTH_CROSS_SITE_COOKIES. SameSite
+      // "none" is meaningless without Secure, so the pair moves together.
+      ...(env.AUTH_CROSS_SITE_COOKIES && {
+        defaultCookieAttributes: {
+          sameSite: "none" as const,
+          secure: true,
+        },
+      }),
     },
     rateLimit: {
       enabled: !env.E2E_DISABLE_AUTH_RATE_LIMIT,

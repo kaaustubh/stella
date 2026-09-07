@@ -191,6 +191,18 @@ export const envApiServerSchema = {
    * limited to first-user bootstrap guarded by SELFHOST_BOOTSTRAP_TOKEN.
    * Hosted deployments should leave this off.
    */
+  /**
+   * Send session cookies as SameSite=None; Secure.
+   *
+   * Needed only when the web app and the API sit on different SITES
+   * (not merely different origins) -- for example two *.up.railway.app
+   * hosts, since that suffix is on the Public Suffix List, so a
+   * SameSite=Lax cookie is never sent back and sign-in cannot hold a
+   * session. Prefer subdomains of one registrable domain and leave this
+   * off: cross-site cookies depend on third-party cookies, which
+   * browsers are restricting.
+   */
+  AUTH_CROSS_SITE_COOKIES: featureFlagSchema,
   SELFHOST_LOCAL_PASSWORD_AUTH: featureFlagSchema,
   SELFHOST_BOOTSTRAP_TOKEN: v.optional(v.pipe(v.string(), v.minLength(32))),
 
