@@ -7,6 +7,8 @@ import {
   translateError,
 } from "@/lib/errors/localization";
 
+const SERVER_ERROR_STATUS = 500;
+
 const AUTH_ERROR_CODES = {
   DISPOSABLE_EMAIL_NOT_ALLOWED: true,
   EMAIL_NOT_VERIFIED: true,
@@ -54,7 +56,13 @@ export const toAuthClientError = (props: ToAuthClientErrorProps) => {
     STATUS_TO_KEY[status] ?? STATUS_ERROR_KEYS.unknown,
   );
   if (!code) {
-    return new AuthClientError({ message, status, statusText });
+    // Some auth failures carry an explanation but no code -- the self-host
+    // bootstrap guard is the one users meet first. A 4xx explanation is far
+    // more actionable than the generic status text, so prefer it. 5xx keeps
+    // the generic text so server internals never reach the user.
+    const explained =
+      status < SERVER_ERROR_STATUS && props.message ? props.message : message;
+    return new AuthClientError({ message: explained, status, statusText });
   }
   if (isAuthClientErrorCode(code)) {
     return new AuthClientError({
