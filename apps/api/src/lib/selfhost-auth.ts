@@ -11,6 +11,10 @@ const EMAIL_OTP_PATHS = new Set([
   "/email-otp/verify-email",
 ]);
 const BOOTSTRAP_ERROR_MESSAGE = "Self-host bootstrap is not available.";
+const BOOTSTRAP_TOKEN_ERROR_MESSAGE =
+  "The setup token is incorrect. Copy SELFHOST_BOOTSTRAP_TOKEN exactly.";
+const BOOTSTRAP_ALREADY_DONE_MESSAGE =
+  "An account already exists on this instance. Sign in instead.";
 
 type BootstrapBody = Record<string, unknown>;
 
@@ -62,7 +66,7 @@ export const assertSelfhostBootstrapSignUp = async (body: unknown) => {
 
   if (await hasAnyAuthUsers()) {
     throw new APIError("BAD_REQUEST", {
-      message: BOOTSTRAP_ERROR_MESSAGE,
+      message: BOOTSTRAP_ALREADY_DONE_MESSAGE,
     });
   }
 
@@ -75,7 +79,7 @@ export const assertSelfhostBootstrapSignUp = async (body: unknown) => {
     })
   ) {
     throw new APIError("BAD_REQUEST", {
-      message: BOOTSTRAP_ERROR_MESSAGE,
+      message: BOOTSTRAP_TOKEN_ERROR_MESSAGE,
     });
   }
 };
