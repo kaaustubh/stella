@@ -157,8 +157,7 @@ RUN VITE_API_URL="${PUBLIC_API_URL}" \
 # opts in (the chunks are injected with ids the tracker matches at capture
 # time), then drop every map so none reaches the runtime image. A build that
 # does not opt in still drops the maps.
-RUN --mount=type=secret,id=posthog_cli_api_key \
-    POSTHOG_SOURCEMAP_PUBLISH="${POSTHOG_SOURCEMAP_PUBLISH}" \
+RUN POSTHOG_SOURCEMAP_PUBLISH="${POSTHOG_SOURCEMAP_PUBLISH}" \
     POSTHOG_CLI_API_KEY="$(cat /run/secrets/posthog_cli_api_key 2>/dev/null || true)" \
     POSTHOG_CLI_HOST="${PUBLIC_POSTHOG_UI_HOST}" \
     POSTHOG_CLI_PROJECT_ID="${POSTHOG_SOURCEMAP_PROJECT_ID}" \
