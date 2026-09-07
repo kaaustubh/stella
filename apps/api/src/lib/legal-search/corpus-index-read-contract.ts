@@ -3,9 +3,10 @@ import { panic } from "better-result";
 import type { CorpusFamily } from "@/api/lib/legal-search/corpus-generation-contract";
 import { corpusIndexClusterForGeneration } from "@/api/lib/legal-search/corpus-generation-contract";
 import {
-  corpusIndexPublisherSummaryField,
+  corpusIndexPublisherFields,
   corpusIndexStemFields,
   requireCorpusIndexManifest,
+  type CorpusIndexPublisherFields,
   type CorpusIndexStemFields,
 } from "@/api/lib/legal-search/corpus-index-manifest";
 import type { CorpusStemming } from "@/api/lib/legal-search/corpus-query";
@@ -30,6 +31,27 @@ export type CaseLawIndexReadContract = {
    * reaches. Named explicitly by a query or not matched at all.
    */
   searchableFields: readonly string[];
+};
+
+/**
+ * The publisher fields of a generation, as the list a query may name them in.
+ * Both are matched only where a clause asks for them; what a bare term reaches
+ * is the index's own decision and neither is part of it.
+ */
+const publisherSearchableFields = (
+  publisher: CorpusIndexPublisherFields,
+): readonly string[] => {
+  switch (publisher.kind) {
+    case "none":
+      return [];
+    case "summary":
+      return [publisher.summaryField];
+    case "summary_and_keywords":
+      return [publisher.summaryField, publisher.keywordsField];
+    default:
+      publisher satisfies never;
+      return panic(`Unhandled publisher fields: ${String(publisher)}`);
+  }
 };
 
 export type LegislationIndexReadContract = {
@@ -78,16 +100,16 @@ export function corpusIndexReadContract(
 
   const manifest = requireCorpusIndexManifest(family, generation);
   switch (manifest.family) {
-    case "case_law": {
-      const publisherSummary = corpusIndexPublisherSummaryField(manifest);
+    case "case_law":
       return {
         family: manifest.family,
         openingPassageQuery: `${manifest.projection.openingField}:true`,
         yearFacetField: manifest.projection.yearFacetField,
         stemFields: corpusIndexStemFields(manifest),
-        searchableFields: publisherSummary === null ? [] : [publisherSummary],
+        searchableFields: publisherSearchableFields(
+          corpusIndexPublisherFields(manifest),
+        ),
       };
-    }
     case "legislation":
       return {
         family: manifest.family,

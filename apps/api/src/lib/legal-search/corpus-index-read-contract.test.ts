@@ -31,6 +31,16 @@ test("legacy and final case-law reads use their declared schema", () => {
     stemFields: { text: "text_stem", publisherSummary: "headnote_stem" },
     searchableFields: ["headnote"],
   });
+  // A generation that maps the classification separately answers with both:
+  // a reader's word reaches the tags where the publisher wrote no sentence,
+  // and the field it matched decides how the hit scores.
+  expect(corpusIndexReadContract("case_law", "case_law_v7")).toEqual({
+    family: "case_law",
+    openingPassageQuery: "is_opening:true",
+    yearFacetField: "decision_year",
+    stemFields: { text: "text_stem", publisherSummary: "headnote_stem" },
+    searchableFields: ["headnote", "keywords"],
+  });
 });
 
 test("legislation reads derive the final opening marker", () => {
@@ -53,6 +63,16 @@ test("extra fields and stemming both need a generation that maps them", () => {
     }),
   ).toEqual({
     surfaceFields: ["headnote"],
+    stemming: { language: "cs", fields: ["text_stem", "headnote_stem"] },
+  });
+  expect(
+    caseLawCorpusQueryFields({
+      generation: "case_law_v7",
+      jurisdiction: "CZE",
+      language: undefined,
+    }),
+  ).toEqual({
+    surfaceFields: ["headnote", "keywords"],
     stemming: { language: "cs", fields: ["text_stem", "headnote_stem"] },
   });
   // Slovak has a stemmer but no published expansion dictionary; the two are
