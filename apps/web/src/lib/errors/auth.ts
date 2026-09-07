@@ -9,6 +9,12 @@ import {
 
 const AUTH_ERROR_CODES = {
   DISPOSABLE_EMAIL_NOT_ALLOWED: true,
+  EMAIL_NOT_VERIFIED: true,
+  INVALID_EMAIL: true,
+  INVALID_EMAIL_OR_PASSWORD: true,
+  PASSWORD_TOO_LONG: true,
+  PASSWORD_TOO_SHORT: true,
+  USER_ALREADY_EXISTS: true,
   YOU_ARE_NOT_A_MEMBER_OF_THIS_ORGANIZATION: true,
 } as const;
 type AuthErrorCode = keyof typeof AUTH_ERROR_CODES;
@@ -29,6 +35,12 @@ type ToAuthClientErrorProps = {
 
 const AUTH_ERROR_KEYS = {
   DISPOSABLE_EMAIL_NOT_ALLOWED: "errors.apiCodes.disposableEmailNotAllowed",
+  EMAIL_NOT_VERIFIED: "errors.apiCodes.emailNotVerified",
+  INVALID_EMAIL: "errors.apiCodes.invalidEmail",
+  INVALID_EMAIL_OR_PASSWORD: "errors.apiCodes.invalidEmailOrPassword",
+  PASSWORD_TOO_LONG: "errors.apiCodes.passwordTooLong",
+  PASSWORD_TOO_SHORT: "errors.apiCodes.passwordTooShort",
+  USER_ALREADY_EXISTS: "errors.apiCodes.userAlreadyExists",
   YOU_ARE_NOT_A_MEMBER_OF_THIS_ORGANIZATION:
     "errors.apiCodes.notOrganizationMember",
 } as const;
