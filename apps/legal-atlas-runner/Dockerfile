@@ -26,7 +26,7 @@ FROM base AS deps
 COPY --from=install-inputs /json/ .
 # The cache mount is detached after this layer, so packages must be
 # materialized under /app instead of linked into the global virtual store.
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=bun-install-cache,target=/root/.bun/install/cache \
     BUN_INSTALL_GLOBAL_STORE=0 bun install --filter @stll/legal-atlas-runner --production --frozen-lockfile --ignore-scripts --network-concurrency=8
 
 FROM deps AS builder
