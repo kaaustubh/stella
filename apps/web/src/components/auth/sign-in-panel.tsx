@@ -61,6 +61,7 @@ const bootstrapFormSchema = v.strictObject({
 });
 
 const authErrorResponseSchema = v.object({
+  code: v.optional(v.string()),
   message: v.optional(v.string()),
 });
 
@@ -649,6 +650,7 @@ const signUpWithSelfhostBootstrap = async (
   const parsedPayload = v.safeParse(authErrorResponseSchema, payload);
   return {
     error: {
+      code: parsedPayload.success ? parsedPayload.output.code : undefined,
       status: response.status,
       statusText: response.statusText,
       message: parsedPayload.success ? parsedPayload.output.message : undefined,
