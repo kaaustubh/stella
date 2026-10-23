@@ -1,0 +1,489 @@
+# GENERATED for Railway service document-processing-worker (stella-eastmond).
+# Same as apps/api/Dockerfile except the cache-mount service id. Regenerate
+# after every rebase; never edit by hand:
+#   sed 's#s/aca33b4a-eeb4-4edd-a87b-a3ca5aa530bc-#s/bf8869bc-7a6f-4d93-a1e8-bc0240683b32-#' apps/api/Dockerfile
+# Pin to digest for supply-chain integrity (oven/bun:1.4.3-slim)
+FROM oven/bun:1.4.3-slim@sha256:14a223fa35747ec728bce300ef85888bc5f7958164d15bbba6a54b22b52a3288 AS base
+WORKDIR /app
+# BEGIN GENERATED INSTALL TOOLING
+COPY packages/scripts/src/child-exit-status.ts packages/scripts/src/child-exit-status.ts
+COPY packages/sha256/src/bun.ts packages/sha256/src/bun.ts
+COPY scripts/ci-install-store.ts scripts/ci-install-store.ts
+COPY scripts/ci-install.ts scripts/ci-install.ts
+# END GENERATED INSTALL TOOLING
+
+FROM base AS install-inputs
+# Preserve Bun's committed root lockfile and full workspace manifest map.
+# Turbo's pruned bun.lock is a generated approximation and can drift from
+# Bun's catalog/resolution semantics.
+COPY . .
+RUN mkdir -p /json && \
+    cp bun.lock package.json /json/ && \
+    for input in bunfig.toml .npmrc patches; do \
+      [ ! -e "$input" ] || cp -a "$input" /json/; \
+    done && \
+    find apps packages -mindepth 2 -maxdepth 2 -name package.json \
+      -not -path '*/node_modules/*' \
+      -exec cp --parents -t /json/ {} +
+
+# Prune the monorepo for the API image entrypoints.
+FROM base AS pruner
+COPY package.json .
+RUN --mount=type=cache,id=s/bf8869bc-7a6f-4d93-a1e8-bc0240683b32-bun-install-cache,target=/root/.bun/install/cache \
+    bun scripts/ci-install.ts /tmp/pruner-install.log -g "turbo@$(bun -p 'require("./package.json").devDependencies.turbo')"
+COPY . .
+RUN turbo prune @stll/api @stll/collab @stll/legal-atlas-runner --docker
+
+# Install dependencies using only package manifests (cached layer)
+FROM base AS deps
+COPY --from=install-inputs /json/ .
+# The cache mount is detached after this layer, so packages must be
+# materialized under /app instead of linked into the global virtual store.
+RUN --mount=type=cache,id=s/bf8869bc-7a6f-4d93-a1e8-bc0240683b32-bun-install-cache,target=/root/.bun/install/cache \
+    BUN_INSTALL_GLOBAL_STORE=0 bun scripts/ci-install.ts /tmp/deps-install.log --filter @stll/api --filter @stll/collab --filter @stll/legal-atlas-runner --frozen-lockfile --ignore-scripts --network-concurrency=8
+
+# Copy source code and compile the API to a Bun binary.
+#
+# NODE_ENV must be set before the first `bun build`: Bun inlines direct
+# `process.env.NODE_ENV` reads (dependencies included) at bundle time, and
+# inlines "development" when it is unset. Every bundle is also built with
+# `--define __STELLA_RELEASE__=true`, so a published artifact refuses local
+# development access whatever its runtime environment says.
+FROM deps AS builder
+ARG TARGETARCH
+ENV NODE_ENV=production
+COPY --from=pruner /app/out/full/ .
+# Generator inputs outside the pruned API workspace graph.
+COPY --from=install-inputs /app/apps/web/src/fonts.css /app/apps/web/src/fonts.css
+COPY --from=install-inputs /app/apps/web/src/i18n/langs/ /app/apps/web/src/i18n/langs/
+COPY --from=install-inputs /app/apps/web/public/fonts/ /app/apps/web/public/fonts/
+COPY --from=install-inputs /app/scripts/generated-artifacts.ts /app/scripts/generated-artifacts.ts
+COPY --from=install-inputs /app/.oxfmtrc.json /app/.oxfmtrc.json
+RUN bun apps/api/scripts/generate-capability-runtime.ts
+RUN bun apps/api/scripts/generate-mcp-app-contracts.ts && bun packages/mcp-apps/scripts/build-mcp-apps.ts
+# Build the server unminified: `bun build --minify` can break Elysia's AOT
+# handler codegen (minified variable renames vs Sucrose). See elysiajs/elysia#1711.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --compile \
+    --no-compile-autoload-dotenv \
+    --sourcemap=inline \
+    --target bun \
+    --outfile /app/server \
+    apps/api/src/server.ts
+# Dedicated Hocuspocus collaboration service. The infrastructure runs this
+# binary from the same immutable image with command override ["/app/collab"].
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --compile \
+    --no-compile-autoload-dotenv \
+    --target bun \
+    --outfile /app/collab \
+    apps/collab/src/index.ts
+# One-off maintenance tool: assigns public slugs to legacy case-law rows that
+# predate slug-at-ingest. Bundled to a single JS file (like the workers above,
+# not --compile) so it reuses the container's Bun runtime instead of embedding
+# a second copy; bundling still resolves the `@/api/*` aliases. Run as a one-off
+# task on the API task-def (it needs the API env, not the migrate env):
+#   command override -> ["bun", "/app/backfill.js"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/backfill.js \
+    apps/api/src/scripts/backfill-case-law-slugs.ts
+# Deployment-owned usage policy configuration; run explicitly after migrations:
+#   command override -> ["bun", "/app/seed-usage-policies.js"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/seed-usage-policies.js \
+    apps/api/scripts/seed-usage-policies.ts
+# Replays one stored hosted-usage provider event at a time. Run with the API
+# task's database credentials. --apply requires --requested-by (a claimed
+# operator label) and --reason.
+# Replay performer is the ECS task ARN; metadata resolution must succeed.
+#   command override -> ["bun", "/app/replay-provider-events.js"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/replay-provider-events.js \
+    apps/api/scripts/replay-provider-events.ts
+# Better Auth migration rehearsal validator. It accepts only a database
+# credential plus a private tmpfs baseline path; stdout is a redacted JSON
+# report. Run on the isolated clone task with command override:
+#   ["bun", "/app/better-auth-migration-audit.js", "pre-migration",
+#    "--baseline", "/tmp/better-auth-baseline.json", "--identity-map",
+#    "/tmp/better-auth-identity-map.json", "--oauth-base-url",
+#    "https://api.stll.app"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/better-auth-migration-audit.js \
+    apps/api/src/scripts/better-auth-migration-audit.ts
+# Trusted Microsoft identity-map derivation for the Better Auth rehearsal. It
+# reads stored ID tokens only inside the isolated task and writes the verified
+# sub-to-oid map to the task's private tmpfs without logging identity values.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/better-auth-microsoft-identity-map.js \
+    apps/api/src/scripts/better-auth-microsoft-identity-map.ts
+# Bounded Better Auth bridge backfill. The command reproduces the private
+# baseline before mutating and runs the post-backfill audit before succeeding.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/better-auth-17-backfill.js \
+    apps/api/src/scripts/better-auth-17-backfill.ts
+# Whole-database census (counts, digests, foreign-key orphans) recorded before
+# a migration rehearsal and compared after it.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/database-census.js \
+    apps/api/src/scripts/database-census.ts
+# Replays stored sign-ins and sessions against a migrated database with the
+# provider served locally; counts only.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/better-auth-sign-in-replay.js \
+    apps/api/src/scripts/better-auth-sign-in-replay.ts
+# Case-law source replay: re-parses stored raw sources with the current
+# parsers and, when asked, withdraws a stored document that no longer parses.
+# It needs the API env (database, corpus bucket), so it runs inside the API
+# task like backfill.js:
+#   ["bun", "/app/replay-case-law-source.js", "--adapter", "eu-ecj"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/replay-case-law-source.js \
+    apps/api/src/scripts/replay-case-law-source.ts
+# Restricted review account commands: `provision` creates the account, its
+# organization and owner membership; `set-password` reads the password from
+# standard input.
+#   ["bun", "/app/review-account.js", "provision"]
+#   ["bun", "/app/review-account.js", "set-password"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/review-account.js \
+    apps/api/src/scripts/review-account.ts
+# Firm user commands for instances without invitation email: `add` creates a
+# verified account with a password from standard input and joins it to the
+# only organization; `set-password` replaces a password.
+#   ["bun", "/app/provision-firm-user.js", "add", "<email>", "<role>", "<name>"]
+#   ["bun", "/app/provision-firm-user.js", "set-password", "<email>"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/provision-firm-user.js \
+    apps/api/src/scripts/provision-firm-user.ts
+# One bounded, load-aware background replay tick; enrolment is reviewed in code.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/replay-tick.js \
+    apps/api/src/scripts/replay-tick.ts
+# Bounded EU completion ticks and operator controls.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/eu-completion-tick.js \
+    apps/api/src/scripts/eu-completion-tick.ts
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/eu-completion-control.js \
+    apps/api/src/scripts/eu-completion-control.ts
+# Case-law erasure and raw-storage operator passes. They delete from the
+# documents bucket, so they run inside the API task, whose role may:
+#   ["bun", "/app/redact-case-law-decision.js", "<decision id>"]
+#   ["bun", "/app/case-law-raw-layout.js", "sweep-legacy", "--source", "<id>"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/redact-case-law-decision.js \
+    apps/api/src/scripts/redact-case-law-decision.ts
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/case-law-raw-layout.js \
+    apps/api/src/scripts/case-law-raw-layout.ts
+# SK ÚS raw completion runs as its own one-off task with a scoped login rather
+# than inside the API task; it reports without writing until `--apply`:
+#   ["bun", "/app/complete-sk-us-raw.js", "--checkpoint", "/tmp/sk-us.json"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/complete-sk-us-raw.js \
+    apps/api/src/scripts/complete-sk-us-raw.ts
+# Decision-analysis operator pass. Like replay above, these need the API env
+# (corpus bucket, storage mode) and run inside the API task, but their
+# database login is overridden per task to the analysis writer role through
+# CASE_LAW_ANALYSIS_DATABASE_URL:
+#   ["bun", "/app/decision-analysis-candidates.js", "--country", "CZE"]
+#   ["bun", "/app/decision-analysis-input.js", "--ids-file", "/tmp/ids.txt"]
+#   ["bun", "/app/decision-analysis-save.js", "--input", "/tmp/analyses.json"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/decision-analysis-candidates.js \
+    apps/api/src/scripts/decision-analysis-candidates.ts
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/decision-analysis-input.js \
+    apps/api/src/scripts/decision-analysis-input.ts
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/decision-analysis-save.js \
+    apps/api/src/scripts/decision-analysis-save.ts
+# One-shot case-law repair passes over rows an earlier write path produced.
+# Both need the API env (database, corpus bucket) and run inside the API task;
+# both report without writing until `--apply`:
+#   ["bun", "/app/repair-publisher-absent-text.js", "--apply"]
+#   ["bun", "/app/repair-cz-ns-court.js", "--apply"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/repair-publisher-absent-text.js \
+    apps/api/src/scripts/repair-publisher-absent-text.ts
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/repair-cz-ns-court.js \
+    apps/api/src/scripts/repair-cz-ns-court.ts
+# Citation polarity pass. `--recheck` re-reads a language's labelled citations
+# against the rule tier and tightens a label only towards a more severe
+# reading, which is the pass to run after new negative rules are seeded. Needs
+# the API env (database) and runs inside the API task:
+#   ["bun", "/app/classify-citations.js", "--recheck", "--language", "cs"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/classify-citations.js \
+    apps/api/scripts/classify-citations.ts
+# Reviewed citation polarities: stores them and applies them to the current
+# citation rows. Needs the API env (database) and runs inside the API task;
+# reports without writing until `--apply`:
+#   ["bun", "/app/apply-reviewed-citation-labels.js", "--file", "/tmp/labels.json",
+#    "--results", "/tmp/results.jsonl", "--apply"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/apply-reviewed-citation-labels.js \
+    apps/api/src/scripts/apply-reviewed-citation-labels.ts
+# Corpus generation registry: status, register, and the serving flip, which
+# checks the target's indexes on the search endpoint first. Needs the API env
+# (database, search endpoint); reports without writing until `--apply`:
+#   ["bun", "/app/corpus-generation.js", "serve", "--family", "case_law", "--generation", "<generation>"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/corpus-generation.js \
+    apps/api/src/scripts/corpus-generation.ts
+# Read-only snippet comparison over the serving corpus index. Reads its query
+# set from a JSON file, so the committed sample ships next to the bundle:
+#   ["bun", "/app/corpus-snippet-compare.js",
+#    "--queries", "/app/corpus-snippet-compare.sample.json",
+#    "--out-dir", "/tmp/snippets"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/corpus-snippet-compare.js \
+    apps/api/src/scripts/corpus-snippet-compare.ts
+# Dedicated durable document-processing worker. Deploy the same image with
+# command override ["bun", "/app/document-processing-worker.js"]. OCR runs
+# in-image through the isolated local ONNX worker.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --sourcemap=inline \
+    --outfile /app/document-processing-worker.js \
+    apps/api/src/scripts/document-processing-worker.ts
+# Bundle the migration entrypoint so its full transitive @/api import graph is
+# resolved at build time. Keep the output at the same directory depth as the
+# source so its `import.meta.dir`-relative migrationsFolder lookup resolves to
+# /app/apps/api/drizzle in the runtime image.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/apps/api/src/db/migrate.js \
+    apps/api/src/db/migrate.ts
+# The sanctions matcher and extraction workers build with `--outdir`, not
+# `--outfile`: each pulls in a native addon, which the bundler emits as a
+# sidecar `.node` asset next to the entry point and references relatively.
+# `--outfile` refuses to write more than one output; `--entry-naming` pins the
+# entry file name the runtime loads. The whole directory is copied into the
+# runtime image below, so the sidecar travels with the bundle. The same-stage
+# `cp` calls below copy regular files whose path may traverse a package symlink
+# under an isolated install; cp follows it and materializes each asset before
+# the cross-stage COPY.
+RUN mkdir -p /app/runtime-workers && \
+    bun build \
+      --define __STELLA_RELEASE__=true \
+      --target bun \
+      --outdir /app/runtime-workers \
+      --entry-naming sanctions-matcher-worker.js \
+      apps/api/src/lib/lists/sanctions/sanctions-matcher-worker.ts && \
+    bun build \
+      --define __STELLA_RELEASE__=true \
+      --target bun \
+      --outfile /app/runtime-workers/pdf-worker.js \
+      apps/api/src/lib/files/pdf-worker.ts && \
+    bun build \
+      --define __STELLA_RELEASE__=true \
+      --target bun \
+      --outdir /app/runtime-workers \
+      apps/api/src/lib/search/extraction-worker.ts && \
+    bun build \
+      --define __STELLA_RELEASE__=true \
+      --target bun \
+      --outfile /app/runtime-workers/ocr-searchable-pdf-worker.js \
+      apps/api/src/lib/ocr-searchable-pdf-worker.ts && \
+    bun build \
+      --define __STELLA_RELEASE__=true \
+      --target bun \
+      --outfile /app/runtime-workers/office-evidence-worker.js \
+      apps/api/src/lib/files/office-evidence-worker.ts && \
+    bun build \
+      --define __STELLA_RELEASE__=true \
+      --target bun \
+      --outfile /app/runtime-workers/ocr-local-worker.js \
+      apps/api/src/lib/ocr-local/ocr-local-worker.ts && \
+    cp node_modules/@silurus/ooxml/dist/xlsx_parser_bg.wasm \
+      /app/runtime-workers/xlsx_parser_bg.wasm && \
+    cp node_modules/@silurus/ooxml/dist/pptx_parser_bg.wasm \
+      /app/runtime-workers/pptx_parser_bg.wasm && \
+    cp node_modules/@embedpdf/pdfium/dist/pdfium.wasm \
+      /app/runtime-workers/pdfium.wasm && \
+    cp apps/api/src/lib/ocr-local/latin-v5-dict.txt \
+      /app/runtime-workers/latin-v5-dict.txt
+# Local OCR runtime assets: the pinned ONNX models, plus the onnxruntime
+# native binding, which the bundled worker resolves relative to its own
+# location (`../bin/...`), so the directory must sit beside the workers.
+RUN cd apps/api && bun src/scripts/fetch-ocr-models.ts /app/ocr-models
+# Materialize only this image's ONNX Runtime closure. The package contains
+# binaries for every supported OS and architecture; copying its whole `bin`
+# directory adds more than 200 MB of unreachable files. The materializer
+# imports the same lookup manifest as the runtime image-layout test, so the
+# worker and container cannot drift onto different package paths.
+RUN cd apps/api && \
+    bun src/scripts/materialize-runtime-worker-native-assets.ts \
+      "$TARGETARCH" /app/runtime-onnx
+RUN bun --filter @stll/legal-atlas-runner build
+RUN DATABASE_URL=postgres://smoke:smoke@localhost:5432/smoke \
+    S3_ENDPOINT=http://localhost \
+    S3_BUCKET=smoke \
+    S3_REGION=eu-central-1 \
+    bun apps/legal-atlas-runner/dist/index.js run eu-ecj-refetch --help
+# Runtime-asset smoke probe: initializes the compiled anonymize and QuickJS
+# runtimes, plus the external YARA rules, worker bundles, OCR model, and font.
+# Compiled like the server and run by the verification stage below.
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --compile \
+    --no-compile-autoload-dotenv \
+    --target bun \
+    --outfile /app/image-smoke \
+    apps/api/src/scripts/image-smoke.ts
+
+# Run the compiled API as non-root. Built from the bare base image: every
+# entrypoint is either the compiled binary or a self-contained
+# `bun build --target bun` bundle, so the runtime image ships only those
+# outputs plus the asset trees they read at runtime; the workspace install
+# (node_modules, manifest tree) stays in the build stages.
+FROM base AS runner
+# Stamp the running container with the release version so the API can
+# return it from /health and tag PostHog events with build metadata.
+# Defaults to "dev" for local `docker build` outside the release flow.
+ARG STELLA_VERSION=dev
+ARG STELLA_COMMIT_SHA=dev
+ARG RAILWAY_GIT_COMMIT_SHA=dev
+ENV STELLA_VERSION=${STELLA_VERSION}
+ENV STELLA_COMMIT_SHA=${STELLA_COMMIT_SHA}
+ENV RAILWAY_GIT_COMMIT_SHA=${RAILWAY_GIT_COMMIT_SHA}
+ENV NODE_ENV=production
+ENV REQUIRE_PERSONAL_AI_KEY=true
+ENV STELLA_WORKER_DIR=/app/runtime/workers
+ENV STELLA_OCR_PDF_FONT_PATH=/app/runtime/fonts/CabinetGrotesk-Regular.otf
+ENV STELLA_YARA_RULES_DIR=/app/yara
+ENV DOCUMENT_OCR_MODEL_DIR=/app/ocr-models
+ENV TEMPLATE_PACKS_CONTENT_DIR=/app/template-packs-content
+RUN groupadd --system --gid 1001 stella && \
+    useradd --system --uid 1001 --gid stella --no-create-home stella
+COPY --chown=stella:stella --from=builder /app/server /app/server
+COPY --chown=stella:stella --from=builder /app/collab /app/collab
+COPY --chown=stella:stella --from=builder /app/backfill.js /app/backfill.js
+COPY --chown=stella:stella --from=builder /app/seed-usage-policies.js /app/seed-usage-policies.js
+COPY --chown=stella:stella --from=builder /app/replay-provider-events.js /app/replay-provider-events.js
+COPY --chown=stella:stella --from=builder /app/better-auth-migration-audit.js /app/better-auth-migration-audit.js
+COPY --chown=stella:stella --from=builder /app/better-auth-microsoft-identity-map.js /app/better-auth-microsoft-identity-map.js
+COPY --chown=stella:stella --from=builder /app/better-auth-17-backfill.js /app/better-auth-17-backfill.js
+COPY --chown=stella:stella --from=builder /app/database-census.js /app/database-census.js
+COPY --chown=stella:stella --from=builder /app/better-auth-sign-in-replay.js /app/better-auth-sign-in-replay.js
+COPY --chown=stella:stella --from=builder /app/replay-case-law-source.js /app/replay-case-law-source.js
+COPY --chown=stella:stella --from=builder /app/replay-tick.js /app/replay-tick.js
+COPY --chown=stella:stella --from=builder /app/review-account.js /app/review-account.js
+COPY --chown=stella:stella --from=builder /app/provision-firm-user.js /app/provision-firm-user.js
+COPY --chown=stella:stella --from=builder /app/eu-completion-tick.js /app/eu-completion-tick.js
+COPY --chown=stella:stella --from=builder /app/eu-completion-control.js /app/eu-completion-control.js
+COPY --chown=stella:stella --from=builder /app/redact-case-law-decision.js /app/redact-case-law-decision.js
+COPY --chown=stella:stella --from=builder /app/case-law-raw-layout.js /app/case-law-raw-layout.js
+COPY --chown=stella:stella --from=builder /app/complete-sk-us-raw.js /app/complete-sk-us-raw.js
+COPY --chown=stella:stella --from=builder /app/decision-analysis-candidates.js /app/decision-analysis-candidates.js
+COPY --chown=stella:stella --from=builder /app/decision-analysis-input.js /app/decision-analysis-input.js
+COPY --chown=stella:stella --from=builder /app/decision-analysis-save.js /app/decision-analysis-save.js
+COPY --chown=stella:stella --from=builder /app/repair-publisher-absent-text.js /app/repair-publisher-absent-text.js
+COPY --chown=stella:stella --from=builder /app/repair-cz-ns-court.js /app/repair-cz-ns-court.js
+COPY --chown=stella:stella --from=builder /app/classify-citations.js /app/classify-citations.js
+COPY --chown=stella:stella --from=builder /app/apply-reviewed-citation-labels.js /app/apply-reviewed-citation-labels.js
+COPY --chown=stella:stella --from=builder /app/corpus-generation.js /app/corpus-generation.js
+COPY --chown=stella:stella --from=builder /app/corpus-snippet-compare.js /app/corpus-snippet-compare.js
+# The snippet report reads its query set from a file passed with `--queries`.
+COPY --chown=stella:stella --from=builder /app/apps/api/src/scripts/corpus-snippet-compare.sample.json /app/corpus-snippet-compare.sample.json
+COPY --chown=stella:stella --from=builder /app/document-processing-worker.js /app/document-processing-worker.js
+COPY --chown=stella:stella --from=builder /app/apps/legal-atlas-runner/dist/index.js /app/legal-atlas.js
+COPY --chown=stella:stella --from=builder /app/apps/legal-atlas-runner/dist/eu-ecj-refetch.js /app/eu-ecj-refetch.js
+# Bundled migration task entrypoint:
+#   ["bun", "/app/apps/api/src/db/migrate.js"]
+COPY --chown=stella:stella --from=builder /app/apps/api/src/db/migrate.js /app/apps/api/src/db/migrate.js
+# The bundled entrypoint reads migration SQL from this external folder.
+COPY --chown=stella:stella --from=builder /app/apps/api/drizzle /app/apps/api/drizzle
+COPY --chown=stella:stella --from=builder /app/runtime-workers /app/runtime/workers
+# ONNX Runtime is the one native exception: its binding dynamically links a
+# sibling shared library, so Bun cannot embed it as one standalone asset. The
+# bundled worker resolves this package-owned directory as `../bin`; the image
+# smoke executes a real model so a broken native closure fails the build.
+COPY --chown=stella:stella --from=builder /app/runtime-onnx/bin /app/runtime/bin
+COPY --chown=stella:stella --from=builder /app/ocr-models /app/ocr-models
+COPY --chown=stella:stella --from=install-inputs \
+    /app/apps/landing/public/fonts/CabinetGrotesk-Regular.otf \
+    /app/runtime/fonts/CabinetGrotesk-Regular.otf
+COPY --chown=stella:stella --from=builder /app/apps/api/src/lib/file-scan/yara /app/yara
+# Bundled template packs: the manifest is compiled into the binary, the DOCX
+# bytes are read from TEMPLATE_PACKS_CONTENT_DIR when a pack is installed.
+# Copied from the unpruned context stage. A build whose context has no content
+# submodule fails the runtime-asset smoke below.
+COPY --chown=stella:stella --from=install-inputs \
+    /app/packages/template-packs/content/ \
+    /app/template-packs-content/
+WORKDIR /app/apps/api
+
+USER stella
+EXPOSE 3001 3002
+CMD ["/app/server"]
+
+# Throwaway verification stage: run the runtime-asset probe on the exact
+# runner filesystem, so a missing or unloadable hand-copied asset fails the
+# image build instead of the first request that reaches it. The probe binary
+# never ships; the final stage below re-selects the runner and forces this
+# stage into the build by copying its marker.
+FROM runner AS runtime-asset-smoke
+COPY --from=builder /app/image-smoke /tmp/image-smoke
+RUN /tmp/image-smoke && touch /tmp/image-smoke-ok
+
+FROM runner
+COPY --chown=stella:stella --from=runtime-asset-smoke /tmp/image-smoke-ok /tmp/image-smoke-ok
