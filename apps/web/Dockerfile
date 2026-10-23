@@ -38,7 +38,7 @@ FROM build-base AS deps
 COPY --from=install-inputs /json/ .
 # A BuildKit cache mount is not part of the resulting layer. Materialize the
 # isolated store in /app so node_modules never points into the detached mount.
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=s/f662edef-96f9-451b-bd16-7e80b75d8bb3-bun-install-cache,target=/root/.bun/install/cache \
     BUN_INSTALL_GLOBAL_STORE=0 bun install --filter @stll/web --frozen-lockfile --ignore-scripts --network-concurrency=8
 
 # Runtime install: the SSR server bundle (dist/server/server.js) externalises
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 FROM build-base AS deps-prod
 ARG TARGETARCH
 COPY --from=install-inputs /json/ .
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=s/f662edef-96f9-451b-bd16-7e80b75d8bb3-bun-install-cache,target=/root/.bun/install/cache \
     case "${TARGETARCH}" in \
       amd64) target_cpu=x64 ;; \
       arm64) target_cpu=arm64 ;; \
@@ -152,7 +152,7 @@ RUN POSTHOG_SOURCEMAP_PUBLISH="${POSTHOG_SOURCEMAP_PUBLISH}" \
 # but this install must never depend on that staying true.
 COPY --from=install-inputs /json/bun.lock /json/package.json ./
 COPY --from=pruner /app/scripts/publish-manifest.ts /app/scripts/stage-web-runtime.ts /app/scripts/web-runtime-closure.ts ./scripts/
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=s/f662edef-96f9-451b-bd16-7e80b75d8bb3-bun-install-cache,target=/root/.bun/install/cache \
     bun scripts/stage-web-runtime.ts /app/web-runtime-stage --install-build-deps
 
 FROM runtime-base AS runner

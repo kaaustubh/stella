@@ -25,7 +25,7 @@ RUN mkdir -p /json && \
 # Prune the monorepo for the API image entrypoints.
 FROM base AS pruner
 COPY package.json .
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=s/aca33b4a-eeb4-4edd-a87b-a3ca5aa530bc-bun-install-cache,target=/root/.bun/install/cache \
     bun scripts/ci-install.ts /tmp/pruner-install.log -g "turbo@$(bun -p 'require("./package.json").devDependencies.turbo')"
 COPY . .
 RUN turbo prune @stll/api @stll/collab @stll/legal-atlas-runner --docker
@@ -35,7 +35,7 @@ FROM base AS deps
 COPY --from=install-inputs /json/ .
 # The cache mount is detached after this layer, so packages must be
 # materialized under /app instead of linked into the global virtual store.
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+RUN --mount=type=cache,id=s/aca33b4a-eeb4-4edd-a87b-a3ca5aa530bc-bun-install-cache,target=/root/.bun/install/cache \
     BUN_INSTALL_GLOBAL_STORE=0 bun scripts/ci-install.ts /tmp/deps-install.log --filter @stll/api --filter @stll/collab --filter @stll/legal-atlas-runner --frozen-lockfile --ignore-scripts --network-concurrency=8
 
 # Copy source code and compile the API to a Bun binary.
