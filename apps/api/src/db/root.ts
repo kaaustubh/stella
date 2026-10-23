@@ -9,6 +9,7 @@ import { envBase } from "@/api/env-base";
 import { queryCountLogger } from "@/api/lib/db-query-counter";
 import { withAggregateTransaction } from "@/api/lib/db/aggregate-lock";
 import { runTransactionsInCallerContext } from "@/api/lib/db/caller-async-context";
+import type { createFirmUserOrganizationStore } from "@/api/lib/db/firm-user-organization-store";
 import { recordLegalResolveAuditInTransaction } from "@/api/lib/db/legal-resolve-audit";
 import type { LegalResolveAudit } from "@/api/lib/db/legal-resolve-audit";
 import { readAuditedActivitySummary } from "@/api/lib/db/operator-activity/read";
@@ -156,6 +157,11 @@ export const readOperatorRegistrationPage = async (query: RegistrationQuery) =>
  */
 export const bindOwnerReviewAccountOrganizationStore = (
   createStore: typeof createReviewAccountOrganizationStore,
+) => createStore(rootDb);
+
+/** The firm-user operator command receives its bounded store, never the owner handle. */
+export const bindOwnerFirmUserOrganizationStore = (
+  createStore: typeof createFirmUserOrganizationStore,
 ) => createStore(rootDb);
 
 /** The dedicated-session route receives its bounded store, never the owner handle. */

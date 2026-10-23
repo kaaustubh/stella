@@ -165,6 +165,16 @@ RUN bun build \
     --target bun \
     --outfile /app/review-account.js \
     apps/api/src/scripts/review-account.ts
+# Firm user commands for instances without invitation email: `add` creates a
+# verified account with a password from standard input and joins it to the
+# only organization; `set-password` replaces a password.
+#   ["bun", "/app/provision-firm-user.js", "add", "<email>", "<role>", "<name>"]
+#   ["bun", "/app/provision-firm-user.js", "set-password", "<email>"]
+RUN bun build \
+    --define __STELLA_RELEASE__=true \
+    --target bun \
+    --outfile /app/provision-firm-user.js \
+    apps/api/src/scripts/provision-firm-user.ts
 # One bounded, load-aware background replay tick; enrolment is reviewed in code.
 RUN bun build \
     --define __STELLA_RELEASE__=true \
@@ -413,6 +423,7 @@ COPY --chown=stella:stella --from=builder /app/better-auth-sign-in-replay.js /ap
 COPY --chown=stella:stella --from=builder /app/replay-case-law-source.js /app/replay-case-law-source.js
 COPY --chown=stella:stella --from=builder /app/replay-tick.js /app/replay-tick.js
 COPY --chown=stella:stella --from=builder /app/review-account.js /app/review-account.js
+COPY --chown=stella:stella --from=builder /app/provision-firm-user.js /app/provision-firm-user.js
 COPY --chown=stella:stella --from=builder /app/eu-completion-tick.js /app/eu-completion-tick.js
 COPY --chown=stella:stella --from=builder /app/eu-completion-control.js /app/eu-completion-control.js
 COPY --chown=stella:stella --from=builder /app/redact-case-law-decision.js /app/redact-case-law-decision.js
