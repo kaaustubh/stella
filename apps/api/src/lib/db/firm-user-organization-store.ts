@@ -13,6 +13,7 @@ import {
 import type { SafeId } from "@/api/lib/branded-types";
 import { withAggregateTransaction } from "@/api/lib/db/aggregate-lock";
 import type { MemberRole } from "@/api/lib/member-roles";
+import { isSyntheticPrincipal } from "@/api/lib/synthetic-principal/constants";
 import { checkMemberAdmission } from "@/api/lib/usage/member-capacity";
 
 // Better Auth's default id length, the shape every auth row holds.
@@ -54,10 +55,12 @@ const provisioningAuditBindings = ({
  * owner binds this to the owner connection (`db/root.ts`).
  */
 export const createFirmUserOrganizationStore = (db: OwnerDatabase) => ({
+  // Every instance carries the migration-seeded monitoring organization;
+  // it is never a firm's organization.
   listOrganizationIds: async () =>
-    (await db.select({ id: organization.id }).from(organization)).map(
-      (row) => row.id,
-    ),
+    (await db.select({ id: organization.id }).from(organization))
+      .map((row) => row.id)
+      .filter((id) => !isSyntheticPrincipal({ organizationId: id })),
   hasMembership: async (userId: SafeId<"user">) =>
     (
       await db
