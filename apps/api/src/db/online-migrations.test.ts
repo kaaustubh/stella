@@ -94,7 +94,9 @@ const CREATE_INDEX_FRAGMENT = "CREATE INDEX CONCURRENTLY";
 const DROP_INDEX_FRAGMENT = "DROP INDEX CONCURRENTLY";
 const REINDEX_FRAGMENT = "REINDEX INDEX CONCURRENTLY";
 const REPORT_EXPORT_INDEX = "report_exports_workspace_requester_created_idx";
-const CREDENTIAL_INDEX = "account_credential_singleton_uidx";
+// Any index a rewritten migration still requires (client/eastmond dropped the
+// credential singleton this suite used).
+const REWRITTEN_INDEX = "case_law_decisions_slug_uidx";
 const CHAT_RUN_INDEX = "chat_turns_org_run_id_uidx";
 const SOURCE_DOCUMENT_INDEX = "case_law_decisions_source_document_idx";
 const SOURCE_CASE_INDEX = "case_law_decisions_source_case_lang_null_idx";
@@ -469,7 +471,7 @@ describe("online migrations", () => {
 
   test("concurrently repairs an interrupted invalid build", async () => {
     const harness = createHarness({
-      indexStates: { [CREDENTIAL_INDEX]: [false, false, true] },
+      indexStates: { [REWRITTEN_INDEX]: [false, false, true] },
     });
 
     await runOnlineMigrations(harness.pool);
@@ -477,7 +479,7 @@ describe("online migrations", () => {
     expect(
       indexOfStatement(
         harness.statements,
-        `${REINDEX_FRAGMENT} public."${CREDENTIAL_INDEX}"`,
+        `${REINDEX_FRAGMENT} public."${REWRITTEN_INDEX}"`,
       ),
     ).toBeGreaterThan(-1);
     expect(harness.released()).toBe(true);
@@ -523,12 +525,12 @@ describe("online migrations", () => {
   });
 
   test("drops an interrupted reindex artifact before retrying", async () => {
-    const artifactName = `${CREDENTIAL_INDEX}_ccnew`;
+    const artifactName = `${REWRITTEN_INDEX}_ccnew`;
     const harness = createHarness({
       artifacts: {
-        [CREDENTIAL_INDEX]: [{ isValid: false, name: artifactName }],
+        [REWRITTEN_INDEX]: [{ isValid: false, name: artifactName }],
       },
-      indexStates: { [CREDENTIAL_INDEX]: [false, false, true] },
+      indexStates: { [REWRITTEN_INDEX]: [false, false, true] },
     });
 
     await runOnlineMigrations(harness.pool);
@@ -541,7 +543,7 @@ describe("online migrations", () => {
     expect(
       indexOfStatement(
         harness.statements,
-        `${REINDEX_FRAGMENT} public."${CREDENTIAL_INDEX}"`,
+        `${REINDEX_FRAGMENT} public."${REWRITTEN_INDEX}"`,
       ),
     ).toBeGreaterThan(drop);
   });
@@ -576,7 +578,7 @@ describe("online migrations", () => {
   test("rejects a valid same-named index with the wrong definition", async () => {
     const harness = createHarness({
       indexStates: {
-        [CREDENTIAL_INDEX]: [
+        [REWRITTEN_INDEX]: [
           {
             definitionBody: "ON public.account USING btree (id)",
             isValid: true,
@@ -591,13 +593,13 @@ describe("online migrations", () => {
     );
 
     expect(rejection).toMatchObject({
-      message: `Required migration index ${CREDENTIAL_INDEX} has an unexpected definition`,
+      message: `Required migration index ${REWRITTEN_INDEX} has an unexpected definition`,
     });
   });
 
   test("startup validation rejects an invalid required index", async () => {
     const harness = createHarness({
-      indexStates: { [CREDENTIAL_INDEX]: [false] },
+      indexStates: { [REWRITTEN_INDEX]: [false] },
     });
 
     const rejection: unknown = await assertOnlineMigrationsApplied(
@@ -608,7 +610,7 @@ describe("online migrations", () => {
     );
 
     expect(rejection).toMatchObject({
-      message: `Required migration index ${CREDENTIAL_INDEX} is not ready`,
+      message: `Required migration index ${REWRITTEN_INDEX} is not ready`,
     });
     expect(indexOfStatement(harness.statements, REINDEX_FRAGMENT)).toBe(-1);
   });
@@ -864,7 +866,7 @@ describe("online migrations", () => {
 
   test("rejects a missing index required by a rewritten migration", async () => {
     const harness = createHarness({
-      indexStates: { [CREDENTIAL_INDEX]: [undefined] },
+      indexStates: { [REWRITTEN_INDEX]: [undefined] },
     });
 
     const rejection: unknown = await runOnlineMigrations(harness.pool).then(
@@ -872,7 +874,7 @@ describe("online migrations", () => {
       (error: unknown) => error,
     );
     expect(rejection).toMatchObject({
-      message: `Required migration index ${CREDENTIAL_INDEX} is missing`,
+      message: `Required migration index ${REWRITTEN_INDEX} is missing`,
     });
     expect(harness.released()).toBe(true);
   });
