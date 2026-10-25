@@ -105,6 +105,31 @@ const findSoleOrganizationId = async () => {
   return Result.ok(brandPersistedOrganizationId(id));
 };
 
+type AuthContext = Awaited<ReturnType<typeof getAuth>["$context"]>;
+
+/** Hashes the password and links or replaces the account's credential. */
+const storePassword = async (
+  context: AuthContext,
+  { userId, password }: { userId: string; password: string },
+) => {
+  const hash = await context.password.hash(password);
+  const accounts = await context.internalAdapter.findAccounts(userId);
+  const hasCredential = accounts.some(
+    (account) =>
+      account.providerId === "credential" && account.accountId === userId,
+  );
+  if (hasCredential) {
+    await context.internalAdapter.updatePassword(userId, hash);
+    return;
+  }
+  await context.internalAdapter.linkAccount({
+    userId,
+    providerId: "credential",
+    accountId: userId,
+    password: hash,
+  });
+};
+
 type AddOptions = { email: string; role: string; name: string };
 
 const addFirmUser = async ({ email, role, name }: AddOptions) => {
@@ -122,11 +147,18 @@ const addFirmUser = async ({ email, role, name }: AddOptions) => {
   }
   const auth = getAuth();
   const context = await auth.$context;
-  if (await context.internalAdapter.findUserByEmail(email)) {
+  // An account without a membership (left by an interrupted run) is adopted;
+  // one that already belongs to an organization is refused.
+  const existing = await context.internalAdapter.findUserByEmail(email);
+  if (
+    existing &&
+    (await organizations.hasMembership(brandPersistedUserId(existing.user.id)))
+  ) {
     return Result.err(
       new FirmUserCommandError({
         code: "account-exists",
-        message: "An account with this email already exists.",
+        message:
+          "An account with this email already belongs to an organization.",
       }),
     );
   }
@@ -149,16 +181,16 @@ const addFirmUser = async ({ email, role, name }: AddOptions) => {
   // path, so Better Auth's user hooks run. Self-host password sign-in does
   // not require verification; the address is marked verified because the
   // operator vouches for it.
-  const user = await auth.api.createAgentUser({
-    body: { email, name, emailVerified: true },
-  });
-  const userId = brandPersistedUserId(user.id);
-  await context.internalAdapter.linkAccount({
-    userId,
-    providerId: "credential",
-    accountId: userId,
-    password: await context.password.hash(password.value),
-  });
+  const userId = brandPersistedUserId(
+    existing
+      ? existing.user.id
+      : (
+          await auth.api.createAgentUser({
+            body: { email, name, emailVerified: true },
+          })
+        ).id,
+  );
+  await storePassword(context, { userId, password: password.value });
   const membership = await organizations.addMember({
     organizationId: organizationId.value,
     userId,
@@ -172,7 +204,7 @@ const addFirmUser = async ({ email, role, name }: AddOptions) => {
       }),
     );
   }
-  return Result.ok(`created ${role}`);
+  return Result.ok(existing ? `adopted ${role}` : `created ${role}`);
 };
 
 const setFirmUserPassword = async (email: string) => {
@@ -191,22 +223,7 @@ const setFirmUserPassword = async (email: string) => {
     );
   }
   const userId = found.user.id;
-  const hash = await context.password.hash(password.value);
-  const accounts = await context.internalAdapter.findAccounts(userId);
-  const hasCredential = accounts.some(
-    (account) =>
-      account.providerId === "credential" && account.accountId === userId,
-  );
-  if (hasCredential) {
-    await context.internalAdapter.updatePassword(userId, hash);
-  } else {
-    await context.internalAdapter.linkAccount({
-      userId,
-      providerId: "credential",
-      accountId: userId,
-      password: hash,
-    });
-  }
+  await storePassword(context, { userId, password: password.value });
   const sessions = await context.internalAdapter.listSessions(userId);
   await context.internalAdapter.deleteUserSessions(userId);
   return Result.ok(`password-set sessions-ended ${sessions.length}`);
