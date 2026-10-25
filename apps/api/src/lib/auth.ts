@@ -1,7 +1,10 @@
 import { apiKey } from "@better-auth/api-key";
 import { createCimdClientDiscovery } from "@better-auth/cimd";
 import { fetchClientMetadataResource } from "@better-auth/cimd/node";
-import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
+import {
+  getCurrentDBAdapterAsyncLocalStorage,
+  tryGetCurrentAuthEndpointContext,
+} from "@better-auth/core/context";
 import type { BetterAuthPlugin, HookEndpointContext } from "better-auth";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -1116,11 +1119,25 @@ export const createAuth = (
   const syntheticAuthHooks = createSyntheticPrincipalAuthHooks();
   const demoConfig = getDemoAccountConfig();
   const reviewConfig = getReviewAccountConfig();
-  const resolveSessionAccount = async (userId: SafeId<"user">) =>
-    await rootDb.query.user.findFirst({
+  const resolveSessionAccount = async (userId: SafeId<"user">) => {
+    // Sign-up creates the user and its first session in one Better Auth
+    // transaction. The owner pool runs on another connection and cannot see
+    // the uncommitted user, so read through the transaction while one is open.
+    const transaction = (
+      await getCurrentDBAdapterAsyncLocalStorage()
+    ).getStore();
+    if (transaction?.isTransactionActive) {
+      return await transaction.adapter.findOne<{ email: string }>({
+        model: "user",
+        where: [{ field: "id", value: userId }],
+        select: ["email"],
+      });
+    }
+    return await rootDb.query.user.findFirst({
       where: { id: userId },
       columns: { email: true },
     });
+  };
   const reviewDatabaseHooks = createReviewAccountDatabaseHooks(reviewConfig, {
     findUserEmail: async (userId: SafeId<"user">) =>
       (await resolveSessionAccount(userId))?.email,
