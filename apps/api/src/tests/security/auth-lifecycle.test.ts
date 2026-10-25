@@ -126,16 +126,22 @@ describe("self-host auth bootstrap lifecycle", () => {
     ).toBe(false);
   });
 
-  test("password bootstrap has a database-level singleton guard", () => {
+  // client/eastmond proof of concept: the instance cannot deliver email, so
+  // firm users get operator-provisioned passwords and the singleton guard is
+  // dropped once the owner exists. Restore the upstream assertion when the
+  // instance moves to email sign-in.
+  test("the credential singleton guard is dropped after bootstrap", () => {
     const authSchemaSource = readSecurityFixture("../../db/auth-schema.ts");
-    const migrationSource = readRootFixture(
-      "apps/api/drizzle/20260703233000_account_credential_singleton/migration.sql",
+    const dropSource = readRootFixture(
+      "apps/api/drizzle/20261025170000_eastmond_allow_password_accounts/migration.sql",
     );
 
-    expect(authSchemaSource).toContain("account_credential_singleton_uidx");
-    expect(authSchemaSource).toContain("'credential'");
-    expect(migrationSource).toContain("account_credential_singleton_uidx");
-    expect(migrationSource).toContain("WHERE provider_id = 'credential'");
+    expect(authSchemaSource).not.toContain(
+      'uniqueIndex("account_credential_singleton_uidx")',
+    );
+    expect(dropSource).toContain(
+      'DROP INDEX CONCURRENTLY IF EXISTS "account_credential_singleton_uidx"',
+    );
   });
 });
 

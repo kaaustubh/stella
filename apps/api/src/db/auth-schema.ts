@@ -180,9 +180,8 @@ export const account = pgTable(
       table.providerId,
       table.accountId,
     ),
-    uniqueIndex("account_credential_singleton_uidx")
-      .on(table.providerId)
-      .where(sql`${table.providerId} = 'credential'`),
+    // client/eastmond proof of concept: more than one credential account is
+    // allowed (migration 20261025170000_eastmond_allow_password_accounts).
     ...denyStellaAccessPolicies(),
   ],
 );
